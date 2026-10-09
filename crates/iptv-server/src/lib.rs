@@ -10,6 +10,7 @@ pub mod config;
 pub mod logging;
 pub mod notice;
 pub mod prefix;
+pub mod probe;
 pub mod stats;
 
 pub use admin::{AdminGate, AdminKey, KeyError, Limits, Verdict};

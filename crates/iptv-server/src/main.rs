@@ -5,7 +5,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use clap::Parser;
 use iptv_server::{
-    logging, router, system_clock, AdminGate, AdminKey, AppState, ChannelStore,
+    logging, probe, router, system_clock, AdminGate, AdminKey, AppState, ChannelStore,
 };
 use iptv_upstream::{
     CmgCipherFactory, FlowOptions, LiveClient, MediaPipeline, PipelineConfig,
@@ -32,6 +32,9 @@ struct Args {
     /// Serve a built web console from this directory (disabled when unset).
     #[arg(long, env = "IPTV_WEB_DIR")]
     web_dir: Option<PathBuf>,
+    /// Ask the relay on `--port` for `/health` and exit 0 when it answers 200 (Docker health checks).
+    #[arg(long)]
+    healthcheck: bool,
     /// More log detail: `-v` adds debug, `-vv` adds trace (RUST_LOG overrides both).
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -57,6 +60,10 @@ fn admin_key() -> Result<(AdminKey, bool)> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    if args.healthcheck {
+        let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
+        return probe::probe(addr).await.map_err(Into::into);
+    }
     logging::init(args.verbose);
     info!(
         version = env!("CARGO_PKG_VERSION"),
