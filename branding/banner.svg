@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 200" role="img" aria-label="iptv-rs">
+<defs>
+  <radialGradient id="glow" cx="0.12" cy="0.5" r="0.7"><stop offset="0" stop-color="#E5484D" stop-opacity=".28"/><stop offset="1" stop-color="#E5484D" stop-opacity="0"/></radialGradient>
+</defs>
+<rect width="760" height="200" rx="28" fill="#0E0E12"/>
+<rect width="760" height="200" rx="28" fill="url(#glow)"/>
+<rect x=".5" y=".5" width="759" height="199" rx="27.500" fill="none" stroke="#fff" stroke-opacity=".08"/>
+<svg x="44" y="40" width="120" height="120" viewBox="0 0 128 128">
+<defs>
+  <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#F26A6E"/><stop offset="1" stop-color="#B8252C"/></linearGradient>
+  <linearGradient id="h" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".38"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+</defs>
+<rect width="128" height="128" rx="32" fill="url(#g)"/>
+<path d="M0 32a32 32 0 0 1 32-32h64a32 32 0 0 1 32 32v34C96 78 32 78 0 66z" fill="url(#h)"/>
+<path d="M51 36.5v43a3 3 0 0 0 4.6 2.5l35-21.500a3 3 0 0 0 0-5l-35-21.500A3 3 0 0 0 51 36.500z" fill="#fff"/>
+<rect x="28" y="96" width="72" height="6" rx="3" fill="#fff" fill-opacity=".35"/>
+<rect x="28" y="96" width="38" height="6" rx="3" fill="#fff"/>
+</svg>
+<text x="196" y="106" font-family="Inter,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif" font-size="64" font-weight="700" fill="#F5F5F7" letter-spacing="-1.500">iptv-rs</text>
+<text x="198" y="144" font-family="Inter,'SF Pro Text','Segoe UI',Helvetica,Arial,sans-serif" font-size="22" fill="#A1A1AA">The IPTV relay: parse and stream</text>
+</svg>
