@@ -37,6 +37,18 @@ struct Args {
     /// (720p Main profile, no B-frames, a keyframe at least every 2 s) for old devices.
     #[arg(long, env = "IPTV_COMPAT_FFMPEG")]
     compat_ffmpeg: Option<PathBuf>,
+    /// Whether to offer the lighter stream when an ffmpeg is set: `off` (or `0`, `false`,
+    /// `no`) turns it off, for example in a Docker image that ships ffmpeg. On by default.
+    #[arg(
+        long,
+        env = "IPTV_COMPAT",
+        default_value = "on",
+        default_missing_value = "on",
+        num_args = 0..=1,
+        require_equals = false,
+        value_parser = parse_toggle,
+    )]
+    compat: bool,
     /// Tallest picture of the compatibility stream, in pixels.
     #[arg(long, env = "IPTV_COMPAT_HEIGHT", default_value_t = 720)]
     compat_height: u32,
@@ -49,6 +61,17 @@ struct Args {
     /// More log detail: `-v` adds debug, `-vv` adds trace (RUST_LOG overrides both).
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+}
+
+/// Reads a switch: `on`, `1`, `true`, `yes` or `off`, `0`, `false`, `no` (also `y`, `n`, `t`,
+/// `f`, in any case). An empty value counts as not given, which is on: a variable that an
+/// orchestrator left empty must not stop the server from starting.
+fn parse_toggle(value: &str) -> Result<bool, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "on" | "1" | "true" | "yes" | "y" | "t" => Ok(true),
+        "off" | "0" | "false" | "no" | "n" | "f" => Ok(false),
+        other => Err(format!("expected on or off, not `{other}`")),
+    }
 }
 
 /// Re-encoded segments kept for players that ask for the same one again.
@@ -86,7 +109,7 @@ async fn main() -> Result<()> {
         channels = %args.channels.display(),
         assets_dir = %args.assets_dir.display(),
         web_dir = ?args.web_dir,
-        compat = args.compat_ffmpeg.is_some(),
+        compat = args.compat_ffmpeg.is_some() && args.compat,
         verbosity = args.verbose,
         pid = std::process::id(),
         "starting iptv-rs"
@@ -118,9 +141,13 @@ async fn main() -> Result<()> {
     let clock = system_clock();
     let admin = Arc::new(AdminGate::with_defaults(key.clone(), Arc::clone(&clock)));
     let state = AppState::new(channels, pipeline, admin, clock);
-    let state = match &args.compat_ffmpeg {
-        Some(program) => state.with_compat(compat(program, &args).await?),
-        None => state,
+    let state = match (&args.compat_ffmpeg, args.compat) {
+        (Some(program), true) => state.with_compat(compat(program, &args).await?),
+        (Some(_), false) => {
+            info!("the compatibility stream is switched off (IPTV_COMPAT / --compat)");
+            state
+        }
+        (None, _) => state,
     };
     let app = router(state, args.web_dir.as_deref());
 
@@ -205,4 +232,62 @@ async fn shutdown_signal() {
         () = terminate => {},
     }
     info!("shutdown signal received; draining connections");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(extra: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from(["iptv-rs"].into_iter().chain(extra.iter().copied()))
+    }
+
+    #[test]
+    fn the_lighter_stream_is_on_by_default_and_needs_an_ffmpeg() {
+        let args = parse(&[]).unwrap();
+        assert!(args.compat);
+        assert!(args.compat_ffmpeg.is_none());
+    }
+
+    #[test]
+    fn every_usual_spelling_of_off_and_on_is_understood() {
+        for off in ["off", "OFF", "0", "false", "no", "n", "f"] {
+            assert!(!parse(&["--compat", off]).unwrap().compat, "{off}");
+            assert!(
+                !parse(&[&format!("--compat={off}")]).unwrap().compat,
+                "{off}"
+            );
+        }
+        for on in ["on", "ON", "1", "true", "yes", "y", "t"] {
+            assert!(parse(&["--compat", on]).unwrap().compat, "{on}");
+        }
+    }
+
+    #[test]
+    fn the_bare_flag_means_on() {
+        assert!(parse(&["--compat"]).unwrap().compat);
+        assert!(parse(&["--compat", "--port", "9000"]).unwrap().compat);
+    }
+
+    #[test]
+    fn a_word_that_is_neither_is_refused_rather_than_guessed() {
+        assert!(parse(&["--compat", "maybe"]).is_err());
+        assert!(parse(&["--compat=2"]).is_err());
+    }
+
+    #[test]
+    fn an_empty_value_counts_as_not_given() {
+        assert!(parse(&["--compat="]).unwrap().compat);
+        assert!(parse(&["--compat", " "]).unwrap().compat);
+    }
+
+    #[test]
+    fn the_encoder_options_have_their_defaults() {
+        let args = parse(&["--compat-ffmpeg", "/app/ffmpeg"]).unwrap();
+        assert_eq!(
+            args.compat_ffmpeg.as_deref(),
+            Some(std::path::Path::new("/app/ffmpeg"))
+        );
+        assert_eq!((args.compat_height, args.compat_kbps), (720, 2500));
+    }
 }

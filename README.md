@@ -38,6 +38,7 @@ iptv-rs is a small, fast IPTV relay written in Rust. It signs upstream requests,
 | `-v`, `-vv` | `RUST_LOG` | `info` | Log detail |
 | | `IPTV_ADMIN_KEY` | generated | Administrator key |
 | `--compat-ffmpeg` | `IPTV_COMPAT_FFMPEG` | off | An ffmpeg with libx264; turns on `?profile=compat` |
+| `--compat` | `IPTV_COMPAT` | `on` | `off` (or `0`, `false`, `no`) switches the lighter stream off even when an ffmpeg is set; empty counts as `on` |
 | `--compat-height` | `IPTV_COMPAT_HEIGHT` | `720` | Tallest picture of the lighter stream |
 | `--compat-kbps` | `IPTV_COMPAT_KBPS` | `2500` | Its video bit rate |
 
@@ -45,7 +46,7 @@ iptv-rs is a small, fast IPTV relay written in Rust. It signs upstream requests,
 
 The normal stream is 1080p High profile with B-frames. Some older iPhones and iPads play it as a slideshow with sound, or not at all. With `--compat-ffmpeg` set, `GET /live/{ch}.m3u8?profile=compat` serves each segment re-encoded to 720p Main profile without B-frames and with a keyframe at least every 2 seconds. The audio is copied untouched and every timestamp is kept, so segments still join exactly. Each segment is encoded once, however many players ask, and costs about 15% of one CPU core per channel being watched.
 
-Without `--compat-ffmpeg` the parameter is ignored and the normal stream is served.
+Without `--compat-ffmpeg`, or with `IPTV_COMPAT=off`, the parameter is ignored and the normal stream is served. The Docker images set `IPTV_COMPAT_FFMPEG` to the ffmpeg they carry, so there the lighter stream is on unless you switch it off.
 
 ## Acknowledgements
 
