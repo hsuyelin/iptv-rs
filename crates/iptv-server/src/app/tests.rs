@@ -20,6 +20,9 @@ use iptv_upstream::{
 use tower::ServiceExt;
 
 use super::*;
+use crate::admin::{AdminGate, AdminKey, Limits};
+
+const ADMIN_KEY: &str = "test-admin-key-0123";
 
 const CHANNELS: &str = r#"
 channels:
@@ -79,9 +82,22 @@ fn app_with(config: PipelineConfig, web_dir: Option<&Path>) -> App {
     let clock = Arc::new(AtomicU64::new(1_000_000));
     let reader = clock.clone();
     let store = Arc::new(ChannelStore::load(&channels_path, Duration::ZERO).unwrap());
+    let admin_clock: Clock = {
+        let reader = clock.clone();
+        Arc::new(move || u128::from(reader.load(Ordering::SeqCst)))
+    };
+    let admin = Arc::new(AdminGate::new(
+        AdminKey::parse(ADMIN_KEY).unwrap(),
+        Limits {
+            failure_delay: Duration::ZERO,
+            ..Limits::default()
+        },
+        admin_clock,
+    ));
     let state = AppState::new(
         store,
         pipeline,
+        admin,
         Arc::new(move || u128::from(reader.load(Ordering::SeqCst))),
     );
     App {
@@ -424,4 +440,215 @@ async fn cors_is_permissive_for_browser_clients() {
     )
     .await;
     assert_eq!(reply.headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+}
+
+async fn post_key(router: &Router, body: &str, headers: &[(&str, &str)]) -> Reply {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/admin/verify")
+        .header("content-type", "application/json");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = router
+        .clone()
+        .oneshot(request.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    Reply {
+        status,
+        headers,
+        body,
+    }
+}
+
+fn key_body(key: &str) -> String {
+    serde_json::json!({ "key": key }).to_string()
+}
+
+#[tokio::test]
+async fn the_admin_check_accepts_the_key_and_refuses_everything_else() {
+    let app = app();
+    let good = post_key(&app.router, &key_body(ADMIN_KEY), &[]).await;
+    assert_eq!(good.status, StatusCode::OK);
+    assert_eq!(good.json()["ok"], true);
+    assert_eq!(good.headers[header::CACHE_CONTROL], "no-store");
+
+    let wrong = post_key(&app.router, &key_body("not-the-key"), &[]).await;
+    assert_eq!(wrong.status, StatusCode::FORBIDDEN);
+    assert_eq!(wrong.json()["ok"], false);
+    // Each of these comes from a different client, so none of them reaches the lock.
+    for (index, body) in ["", "not json", "{}", r#"{"key": 5}"#, r#"{"other": "x"}"#]
+        .into_iter()
+        .enumerate()
+    {
+        let client = format!("198.51.100.{}", 100 + index);
+        let reply = post_key(&app.router, body, &[("x-forwarded-for", &client)]).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn the_admin_check_is_post_only_and_caps_the_body() {
+    let app = app();
+    assert_eq!(
+        get(&app.router, "/admin/verify").await.status,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    let huge = "x".repeat(10_000);
+    assert_eq!(
+        post_key(&app.router, &key_body(&huge), &[]).await.status,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+}
+
+#[tokio::test]
+async fn repeated_wrong_keys_lock_the_client_out_with_retry_after() {
+    let app = app();
+    let client = [("x-forwarded-for", "198.51.100.20")];
+    for _ in 0..5 {
+        let reply = post_key(&app.router, &key_body("guess"), &client).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    }
+    // Locked: even the right key is refused.
+    let locked = post_key(&app.router, &key_body(ADMIN_KEY), &client).await;
+    assert_eq!(locked.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(locked.headers[header::RETRY_AFTER], "900");
+    assert_eq!(locked.json()["retry_after"], 900);
+    assert_eq!(locked.json()["ok"], false);
+
+    // Someone else, named by the proxy, is unaffected.
+    let other = [("x-forwarded-for", "198.51.100.21")];
+    assert_eq!(
+        post_key(&app.router, &key_body(ADMIN_KEY), &other)
+            .await
+            .status,
+        StatusCode::OK
+    );
+
+    // After the lock ends the right key works again.
+    app.clock.fetch_add(15 * 60 * 1000 + 1000, Ordering::SeqCst);
+    assert_eq!(
+        post_key(&app.router, &key_body(ADMIN_KEY), &client)
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn console_page_addresses_serve_the_console_and_files_stay_files() {
+    let web = tempfile::tempdir().unwrap();
+    fs::write(web.path().join("index.html"), "<h1>console</h1>").unwrap();
+    fs::create_dir(web.path().join("assets")).unwrap();
+    fs::write(web.path().join("assets/app.js"), "console.log(1)").unwrap();
+    let app = app_with(PipelineConfig::default(), Some(web.path()));
+
+    let page = get(&app.router, &format!("/{ADMIN_KEY}")).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text().contains("console"));
+    assert_eq!(
+        page.headers[header::CONTENT_TYPE],
+        "text/html; charset=utf-8"
+    );
+    assert_eq!(page.headers[header::CACHE_CONTROL], "no-cache");
+    // Any single word is a page address; the console decides what it means.
+    assert_eq!(get(&app.router, "/whatever").await.status, StatusCode::OK);
+
+    assert_eq!(
+        get(&app.router, "/assets/app.js").await.text(),
+        "console.log(1)"
+    );
+    assert_eq!(
+        get(&app.router, "/assets/missing.js").await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(get(&app.router, "/a/b").await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        get(&app.router, "/x.js").await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn without_a_web_dir_a_key_path_is_just_not_found() {
+    let app = app();
+    assert_eq!(
+        get(&app.router, &format!("/{ADMIN_KEY}")).await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[derive(Clone, Default)]
+struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogBuffer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+    type Writer = LogBuffer;
+    fn make_writer(&'a self) -> LogBuffer {
+        self.clone()
+    }
+}
+
+/// One process-wide logger shared by the whole test binary. A per-test logger would miss
+/// events whose call sites other tests already hit while no logger was installed.
+fn captured_logs() -> LogBuffer {
+    static BUFFER: std::sync::OnceLock<LogBuffer> = std::sync::OnceLock::new();
+    BUFFER
+        .get_or_init(|| {
+            let buffer = LogBuffer::default();
+            let _ = tracing::subscriber::set_global_default(crate::logging::subscriber(
+                buffer.clone(),
+                tracing_subscriber::EnvFilter::new("debug"),
+                false,
+            ));
+            buffer
+        })
+        .clone()
+}
+
+#[tokio::test]
+async fn logs_describe_requests_but_never_show_the_key_or_a_guess() {
+    let buffer = captured_logs();
+    let web = tempfile::tempdir().unwrap();
+    fs::write(web.path().join("index.html"), "<h1>console</h1>").unwrap();
+    let app = app_with(PipelineConfig::default(), Some(web.path()));
+
+    get(&app.router, &format!("/{ADMIN_KEY}")).await;
+    post_key(&app.router, &key_body("a-secret-guess-value"), &[]).await;
+    post_key(&app.router, &key_body(ADMIN_KEY), &[]).await;
+    get(&app.router, "/channels").await;
+
+    let log = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        !log.contains(ADMIN_KEY),
+        "the key leaked into the log:\n{log}"
+    );
+    assert!(
+        !log.contains("a-secret-guess-value"),
+        "a guess leaked:\n{log}"
+    );
+    assert!(log.contains("<static>"), "{log}");
+    assert!(log.contains("request served"), "{log}");
+    assert!(
+        log.contains("route=\"/channels\"") || log.contains("route=/channels"),
+        "{log}"
+    );
+    assert!(log.contains("administrator key rejected"), "{log}");
+    assert!(log.contains("administrator key accepted"), "{log}");
+    assert!(log.contains("crates/iptv-server/src/app.rs:"), "{log}");
+    assert!(log.contains("status=200"), "{log}");
+    assert!(log.contains("status=403"), "{log}");
 }

@@ -7,6 +7,7 @@ use std::{
 use rand::{rngs::OsRng, Rng};
 use serde::Serialize;
 use tokio::sync::Semaphore;
+use tracing::{debug, warn};
 
 use crate::error::{Result, UpstreamError};
 
@@ -159,6 +160,12 @@ impl ApiFlowLimiter {
                     let mut book = self.inner.book();
                     book.queued = book.queued.saturating_sub(1);
                     book.stats.timed_out += 1;
+                    warn!(
+                        waited_ms = enqueued_at.elapsed().as_millis(),
+                        queued = book.queued,
+                        timed_out = book.stats.timed_out,
+                        "upstream call gave up waiting for a free slot"
+                    );
                     return Err(UpstreamError::FlowQueueTimeout {
                         waited_ms: enqueued_at.elapsed().as_millis(),
                     });
@@ -187,6 +194,10 @@ impl ApiFlowLimiter {
         }
 
         let started_at = Instant::now();
+        debug!(
+            waited_ms = started_at.duration_since(enqueued_at).as_millis(),
+            "upstream call starting"
+        );
         {
             let mut book = self.inner.book();
             book.stats.started += 1;

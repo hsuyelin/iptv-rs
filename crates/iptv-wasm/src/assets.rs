@@ -8,6 +8,7 @@ use std::{
 use base64::Engine as _;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use tracing::{debug, info};
 use wasmtime::{Engine, Module};
 
 use crate::{cmg::CmgRuntime, error::Result, keygen::KeygenSigner, ticket::TicketSigner};
@@ -123,9 +124,11 @@ impl AssetBundle {
     /// Returns [`crate::WasmError::Asset`] when the directory, manifest or a file is
     /// missing or invalid, or when a module fails to compile.
     pub fn load(dir: &Path) -> Result<Arc<Self>> {
+        let started = std::time::Instant::now();
         if !dir.is_dir() {
             return Err(AssetError::MissingDirectory(dir.to_path_buf()).into());
         }
+        info!(dir = %dir.display(), "loading the runtime assets");
         let manifest = read_manifest(dir)?;
         let mut files: BTreeMap<&str, Vec<u8>> = BTreeMap::new();
         for name in REQUIRED_FILES {
@@ -143,6 +146,7 @@ impl AssetBundle {
                 }
                 .into());
             }
+            debug!(file = name, bytes = bytes.len(), sha256 = %actual, "asset verified against the manifest");
             files.insert(name, bytes);
         }
 
@@ -154,8 +158,13 @@ impl AssetBundle {
                 source,
             })
         };
+        let compiling = std::time::Instant::now();
         let keygen = compile("keygen_bg.wasm", take("keygen_bg.wasm"))?;
         let ticket = compile("ticket.wasm", take("ticket.wasm"))?;
+        debug!(
+            elapsed_ms = compiling.elapsed().as_millis(),
+            "compiled the keygen and ticket modules"
+        );
 
         let script = std::str::from_utf8(take("cmg.worker.js"))
             .map_err(|error| AssetError::Script(error.to_string()))?;
@@ -165,6 +174,12 @@ impl AssetBundle {
             static_data: extract_static_data(script)?,
             player_json: take("CMGPlayer.json").to_vec(),
         });
+        info!(
+            dir = %dir.display(),
+            modules = 3,
+            elapsed_ms = started.elapsed().as_millis(),
+            "runtime assets loaded and compiled"
+        );
         Ok(Arc::new(Self {
             engine,
             keygen,

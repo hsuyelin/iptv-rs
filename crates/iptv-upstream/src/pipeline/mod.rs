@@ -11,7 +11,7 @@ use iptv_media::{
 };
 use iptv_wasm::{AssetBundle, CmgSession};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{
     channel::Channel,
@@ -204,6 +204,7 @@ impl MediaPipeline {
         segment_url: impl Fn(&SegmentRef) -> String,
     ) -> Result<String> {
         let live = &self.shared.live;
+        debug!(ch = %channel.ch, livepid = %channel.livepid, "playlist requested");
         let source = live.fetch_source(channel.clone()).await?;
         let window = match self.fetch_media_playlist(&source.url).await {
             Ok(playlist) => self.update_history(channel, &playlist),
@@ -211,6 +212,11 @@ impl MediaPipeline {
                 live.invalidate_source(&source.cache_key);
                 let cached = self.history_window(&channel.livepid);
                 if cached.is_empty() {
+                    warn!(
+                        ch = %channel.ch,
+                        error = %first_error,
+                        "media playlist failed and there is no history; refreshing the live source now"
+                    );
                     let refreshed = live.refresh_source_now(channel.clone()).await?;
                     let playlist = self.fetch_media_playlist(&refreshed.url).await?;
                     self.update_history(channel, &playlist)
@@ -225,8 +231,17 @@ impl MediaPipeline {
                 }
             }
         };
-        let text = render_local_playlist(&window, segment_url)
-            .ok_or(UpstreamError::NoPlayableSegments)?;
+        let text = render_local_playlist(&window, segment_url).ok_or_else(|| {
+            warn!(ch = %channel.ch, window = window.len(), "no playable segment in the window");
+            UpstreamError::NoPlayableSegments
+        })?;
+        debug!(
+            ch = %channel.ch,
+            segments = window.len(),
+            first_sequence = window.first().map(|segment| segment.sequence),
+            last_sequence = window.last().map(|segment| segment.sequence),
+            "rendered the local playlist"
+        );
         let mut state = self.shared.state();
         for segment in window {
             state.published.insert(
@@ -254,10 +269,15 @@ impl MediaPipeline {
             .published
             .get(id)
             .cloned()
-            .ok_or(UpstreamError::UnknownSegment)?;
+            .ok_or_else(|| {
+                debug!(ch = %channel.ch, id, "segment id is not published (expired or never listed)");
+                UpstreamError::UnknownSegment
+            })?;
         if published.ch != channel.ch || published.livepid != channel.livepid {
+            warn!(ch = %channel.ch, id, owner = %published.ch, "segment belongs to another channel");
             return Err(UpstreamError::SegmentNotInChannel);
         }
+        trace!(ch = %channel.ch, id, sequence = published.segment.sequence, "segment queued");
         let sender = self.worker_for(&channel.livepid);
         let (reply, answer) = oneshot::channel();
         sender
@@ -281,7 +301,9 @@ impl MediaPipeline {
                 return sender.clone();
             }
         }
-        let (sender, receiver) = mpsc::channel(self.shared.config.queue_capacity.max(1));
+        let capacity = self.shared.config.queue_capacity.max(1);
+        info!(%livepid, capacity, "starting a worker for the channel");
+        let (sender, receiver) = mpsc::channel(capacity);
         state.workers.insert(livepid.to_string(), sender.clone());
         tokio::spawn(worker_loop(
             Arc::downgrade(&self.shared),
@@ -412,7 +434,25 @@ async fn worker_loop(
         let Some(shared) = shared.upgrade() else {
             break;
         };
+        let started = std::time::Instant::now();
+        let sequence = job.segment.segment.sequence;
         let result = worker.process(&shared, &job.segment.segment).await;
+        match &result {
+            Ok(bytes) => debug!(
+                livepid = %worker.livepid,
+                sequence,
+                bytes = bytes.len(),
+                elapsed_ms = started.elapsed().as_millis(),
+                "segment processed"
+            ),
+            Err(error) => warn!(
+                livepid = %worker.livepid,
+                sequence,
+                elapsed_ms = started.elapsed().as_millis(),
+                error = %error,
+                "segment processing failed"
+            ),
+        }
         // The requester may have gone away; the result stays cached for the next one.
         let _ = job.reply.send(result);
     }
@@ -485,9 +525,16 @@ impl Worker {
         }
         let ciphers = Arc::clone(&shared.ciphers);
         let livepid = self.livepid.clone();
+        let started = std::time::Instant::now();
         let cipher = tokio::task::spawn_blocking(move || ciphers.start(&livepid))
             .await
             .map_err(|error| UpstreamError::Join(error.to_string()))??;
+        info!(
+            livepid = %self.livepid,
+            reset_count = self.reset_count,
+            elapsed_ms = started.elapsed().as_millis(),
+            "created the channel's decrypt runtime"
+        );
         self.runtime = Some(ChannelRuntime {
             cipher,
             video: VideoState::default(),
@@ -512,15 +559,40 @@ impl Worker {
         if let Some(cached) = self.runtime_ref()?.processed.get(&segment.sequence) {
             return Ok(cached.clone());
         }
+        let fetch_started = std::time::Instant::now();
         let response = shared
             .transport
             .send(HttpRequest::get(segment.url.clone(), upstream_headers()))
             .await
-            .map_err(|source| UpstreamError::Transport {
-                what: "upstream segment",
-                source,
+            .map_err(|source| {
+                warn!(
+                    livepid = %self.livepid,
+                    sequence = segment.sequence,
+                    url = %strip_query(&segment.url),
+                    error = %source,
+                    "upstream segment request failed"
+                );
+                UpstreamError::Transport {
+                    what: "upstream segment",
+                    source,
+                }
             })?;
+        debug!(
+            livepid = %self.livepid,
+            sequence = segment.sequence,
+            url = %strip_query(&segment.url),
+            status = response.status,
+            bytes = response.body.len(),
+            elapsed_ms = fetch_started.elapsed().as_millis(),
+            "fetched the upstream segment"
+        );
         if !response.is_success() {
+            warn!(
+                livepid = %self.livepid,
+                sequence = segment.sequence,
+                status = response.status,
+                "upstream segment answered with an error status"
+            );
             return Err(UpstreamError::Status {
                 what: "upstream segment",
                 status: response.status,

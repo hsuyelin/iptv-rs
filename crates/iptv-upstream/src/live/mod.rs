@@ -7,7 +7,7 @@ use std::{
 use base64::Engine as _;
 use iptv_wasm::{AssetBundle, KeygenSigner, TicketRequest, TicketSigner};
 use serde::Deserialize;
-use tracing::{debug, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     channel::Channel,
@@ -151,8 +151,10 @@ impl LiveClient {
     pub async fn fetch_source(&self, channel: Channel) -> Result<SourceCacheEntry> {
         let cache_key = channel.cache_key();
         if let Some(cached) = self.cached_source_or_refresh(&channel, &cache_key) {
+            trace!(ch = %channel.ch, "live source served from the cache");
             return Ok(cached);
         }
+        debug!(ch = %channel.ch, "live source not cached; fetching it");
         self.refresh_source(channel).await
     }
 
@@ -226,10 +228,28 @@ impl LiveClient {
             .run(async move {
                 let mut last_error = None;
                 for attempt in 0..=API_FLOW_RETRIES {
+                    let started = std::time::Instant::now();
                     match this.fetch_source_once(&channel).await {
-                        Ok(value) => return Ok(value),
+                        Ok(value) => {
+                            info!(
+                                ch = %channel.ch,
+                                attempt,
+                                elapsed_ms = started.elapsed().as_millis(),
+                                "fetched the live source"
+                            );
+                            return Ok(value);
+                        }
                         Err(error) => {
                             let retryable = error.is_retryable();
+                            warn!(
+                                ch = %channel.ch,
+                                attempt,
+                                retryable,
+                                elapsed_ms = started.elapsed().as_millis(),
+                                error = %error,
+                                debug_error = ?error,
+                                "live source attempt failed"
+                            );
                             last_error = Some(error);
                             if attempt >= API_FLOW_RETRIES || !retryable {
                                 break;
@@ -250,6 +270,9 @@ impl LiveClient {
             .await;
         let mut cache = self.inner.cache();
         cache.refresh_inflight.remove(&cache_key);
+        if let Err(error) = &result {
+            error!(cache_key = %cache_key, error = %error, "live source could not be fetched");
+        }
         let value = result?;
         cache.entries.insert(cache_key, value.clone());
         Ok(value)

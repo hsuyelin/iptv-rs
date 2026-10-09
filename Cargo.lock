@@ -1149,6 +1149,7 @@ dependencies = [
  "iptv-media",
  "iptv-upstream",
  "iptv-wasm",
+ "rand 0.8.6",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1198,6 +1199,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+ "tracing",
  "url",
  "wasmtime",
 ]

@@ -4,13 +4,15 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iptv_server::{router, system_clock, AppState, ChannelStore};
+use iptv_server::{
+    logging, router, system_clock, AdminGate, AdminKey, AppState, ChannelStore,
+};
 use iptv_upstream::{
     CmgCipherFactory, FlowOptions, LiveClient, MediaPipeline, PipelineConfig,
     ReqwestTransport, USER_AGENT,
 };
 use iptv_wasm::AssetBundle;
-use tracing::info;
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Parser)]
 #[command(name = "iptv-rs", about = "Single-binary IPTV relay")]
@@ -30,21 +32,43 @@ struct Args {
     /// Serve a built web console from this directory (disabled when unset).
     #[arg(long, env = "IPTV_WEB_DIR")]
     web_dir: Option<PathBuf>,
-    /// Log at info level.
-    #[arg(long, default_value_t = false)]
-    verbose: bool,
+    /// More log detail: `-v` adds debug, `-vv` adds trace (RUST_LOG overrides both).
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
+}
+
+/// Environment variable that holds the administrator key. When it is not set, a random
+/// key is generated for this run and printed once.
+const ADMIN_KEY_VAR: &str = "IPTV_ADMIN_KEY";
+
+/// Reads the administrator key from the environment or generates one. The second value
+/// is true when the key was generated.
+fn admin_key() -> Result<(AdminKey, bool)> {
+    match std::env::var(ADMIN_KEY_VAR) {
+        Ok(value) if !value.is_empty() => {
+            let key = AdminKey::parse(&value)
+                .with_context(|| format!("{ADMIN_KEY_VAR} is not usable"))?;
+            Ok((key, false))
+        }
+        _ => Ok((AdminKey::generate(), true)),
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let default_filter = if args.verbose { "info" } else { "warn" };
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| default_filter.into()),
-        )
-        .init();
+    logging::init(args.verbose);
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        host = %args.host,
+        port = args.port,
+        channels = %args.channels.display(),
+        assets_dir = %args.assets_dir.display(),
+        web_dir = ?args.web_dir,
+        verbosity = args.verbose,
+        pid = std::process::id(),
+        "starting iptv-rs"
+    );
 
     // Fail fast if the channel file is missing or malformed.
     let channels = Arc::new(ChannelStore::load(&args.channels, Duration::from_secs(1))?);
@@ -68,7 +92,10 @@ async fn main() -> Result<()> {
         Arc::new(CmgCipherFactory::new(assets)),
         PipelineConfig::default(),
     );
-    let state = AppState::new(channels, pipeline, system_clock());
+    let (key, generated) = admin_key()?;
+    let clock = system_clock();
+    let admin = Arc::new(AdminGate::with_defaults(key.clone(), Arc::clone(&clock)));
+    let state = AppState::new(channels, pipeline, admin, clock);
     let app = router(state, args.web_dir.as_deref());
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
@@ -77,14 +104,31 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("bind {addr}"))?;
+    if generated {
+        // Printed straight to the terminal, not through the log: the key is a secret and
+        // must not end up in collected logs. It changes on every start; set the variable
+        // to keep one.
+        eprintln!(
+            "\nAdministrator key (generated for this run; set {ADMIN_KEY_VAR} to choose your own):\n  {}\nOpen the console at http://{addr}/<key> to see the admin pages.\n",
+            key.expose()
+        );
+        warn!("administrator key was generated for this run");
+    } else {
+        info!("administrator key taken from {ADMIN_KEY_VAR}");
+    }
     info!(%addr, "iptv-rs listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
+    info!("iptv-rs stopped");
     Ok(())
 }
 
 async fn shutdown_signal() {
+    debug!("waiting for a shutdown signal");
     let ctrl_c = async {
         // If the handler cannot be installed, never complete this branch.
         if tokio::signal::ctrl_c().await.is_err() {
@@ -106,4 +150,5 @@ async fn shutdown_signal() {
         () = ctrl_c => {},
         () = terminate => {},
     }
+    info!("shutdown signal received; draining connections");
 }

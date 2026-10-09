@@ -14,7 +14,9 @@ use axum::{
 };
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use iptv_media::testkit::{synthetic_segment, StreamSpec};
-use iptv_server::{router, system_clock, AppState, ChannelIndex, ChannelStore};
+use iptv_server::{
+    router, system_clock, AdminGate, AdminKey, AppState, ChannelIndex, ChannelStore,
+};
 use iptv_upstream::{
     testkit::{shared_assets, ScriptedTransport, XorCipherFactory},
     FlowOptions, LiveClient, MediaPipeline, PipelineConfig,
@@ -115,7 +117,18 @@ fn routes(c: &mut Criterion) {
         PipelineConfig::default(),
     );
     let store = Arc::new(ChannelStore::load(&path, Duration::from_secs(1)).unwrap());
-    let app = router(AppState::new(store, pipeline, system_clock()), None);
+    let app = router(
+        AppState::new(
+            store,
+            pipeline,
+            Arc::new(AdminGate::with_defaults(
+                AdminKey::generate(),
+                system_clock(),
+            )),
+            system_clock(),
+        ),
+        None,
+    );
 
     // Warm the channel so the benchmarks measure the steady state.
     let playlist = runtime.block_on(async {
