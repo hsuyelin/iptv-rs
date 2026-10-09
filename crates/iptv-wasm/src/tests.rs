@@ -111,11 +111,11 @@ fn cmg_session_primes_and_ticks() {
 
 #[test]
 fn missing_directory_is_named() {
-    let error = asset_error(AssetBundle::load(Path::new("/nonexistent/ysp-assets")));
+    let error = asset_error(AssetBundle::load(Path::new("/nonexistent/iptv-assets")));
     assert!(
-        matches!(&error, AssetError::MissingDirectory(path) if path.ends_with("ysp-assets"))
+        matches!(&error, AssetError::MissingDirectory(path) if path.ends_with("iptv-assets"))
     );
-    assert!(error.to_string().contains("/nonexistent/ysp-assets"));
+    assert!(error.to_string().contains("/nonexistent/iptv-assets"));
 }
 
 #[test]
