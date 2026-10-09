@@ -566,9 +566,34 @@ async fn console_page_addresses_serve_the_console_and_files_stay_files() {
         get(&app.router, "/assets/missing.js").await.status,
         StatusCode::NOT_FOUND
     );
-    assert_eq!(get(&app.router, "/a/b").await.status, StatusCode::NOT_FOUND);
     assert_eq!(
         get(&app.router, "/x.js").await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unknown_page_gets_the_console_with_a_404_and_files_get_a_bare_one() {
+    let web = tempfile::tempdir().unwrap();
+    fs::write(web.path().join("index.html"), "<h1>console</h1>").unwrap();
+    let with_console = app_with(PipelineConfig::default(), Some(web.path()));
+
+    let page = get(&with_console.router, "/a/b").await;
+    assert_eq!(page.status, StatusCode::NOT_FOUND);
+    assert!(page.text().contains("console"));
+    assert_eq!(
+        page.headers[header::CONTENT_TYPE],
+        "text/html; charset=utf-8"
+    );
+    assert_eq!(page.headers[header::CACHE_CONTROL], "no-cache");
+
+    // A missing file is a plain 404, not a page.
+    let file = get(&with_console.router, "/assets/missing.js").await;
+    assert_eq!(file.status, StatusCode::NOT_FOUND);
+    assert!(!file.text().contains("console"));
+    // Without a console there is nothing to draw the page with.
+    assert_eq!(
+        get(&app().router, "/a/b").await.status,
         StatusCode::NOT_FOUND
     );
 }

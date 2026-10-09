@@ -104,7 +104,9 @@ const VERIFY_BODY_LIMIT: usize = 1024;
 
 /// Builds the HTTP router. When `web_dir` is set, files from it answer every path that is
 /// not an API route, and a single-segment path without a dot (the console's address with
-/// an administrator key) answers with the console's `index.html`.
+/// an administrator key) answers with the console's `index.html`. Any other path without a
+/// dot that no file answers gets the same page with status 404, for the console's own
+/// "page not found".
 pub fn router(state: AppState, web_dir: Option<&Path>) -> Router {
     let api = Router::new()
         .route("/health", get(health))
@@ -131,27 +133,44 @@ fn is_page_path(path: &str) -> bool {
     !trimmed.is_empty() && !trimmed.contains('/') && !trimmed.contains('.')
 }
 
+/// True for an address that no file answers but that is not a file name either (`/a/b`):
+/// the console draws its own "page not found" for it.
+fn is_unknown_page(path: &str) -> bool {
+    !path.contains('.')
+}
+
+/// The console's `index.html` with `status`, never cached.
+async fn console_page(dir: &Path, status: StatusCode) -> Response {
+    match tokio::fs::read(dir.join("index.html")).await {
+        Ok(page) => {
+            let mut response = Response::new(axum::body::Body::from(page));
+            *response.status_mut() = status;
+            let headers = response.headers_mut();
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            );
+            headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            response
+        }
+        Err(error) => {
+            error!(dir = %dir.display(), %error, "cannot read the console's index.html");
+            not_found()
+        }
+    }
+}
+
 async fn console(dir: Arc<PathBuf>, request: Request) -> Response {
-    if is_page_path(request.uri().path()) {
-        return match tokio::fs::read(dir.join("index.html")).await {
-            Ok(page) => {
-                let mut response = Response::new(axum::body::Body::from(page));
-                let headers = response.headers_mut();
-                headers.insert(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static("text/html; charset=utf-8"),
-                );
-                headers
-                    .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-                response
-            }
-            Err(error) => {
-                error!(dir = %dir.display(), %error, "cannot read the console's index.html");
-                not_found()
-            }
-        };
+    let path = request.uri().path().to_owned();
+    if is_page_path(&path) {
+        return console_page(&dir, StatusCode::OK).await;
     }
     match ServeDir::new(&*dir).oneshot(request).await {
+        Ok(response)
+            if response.status() == StatusCode::NOT_FOUND && is_unknown_page(&path) =>
+        {
+            console_page(&dir, StatusCode::NOT_FOUND).await
+        }
         Ok(response) => response.into_response(),
         Err(never) => match never {},
     }
