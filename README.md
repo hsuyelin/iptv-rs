@@ -22,25 +22,20 @@
 
 ---
 
-iptv-rs is a small, fast IPTV relay written in Rust. It signs upstream requests, decrypts and remuxes HLS segments, and serves standard `.m3u` and `.m3u8` endpoints to any player. It parses and streams, nothing else: there is no UI in the binary, and the WASM assets are loaded and verified at run time, never embedded.
-
-It is one half of [iptv-vod](https://github.com/hsuyelin/iptv-vod); the other half is the web console, [iptv-web](https://github.com/hsuyelin/iptv-web).
+iptv-rs is a small, fast IPTV relay written in Rust. It signs upstream requests, decrypts and remuxes HLS segments, and serves standard `.m3u` and `.m3u8` endpoints to any player. It is one half of [iptv-vod](https://github.com/hsuyelin/iptv-vod); the other half is the web console, [iptv-web](https://github.com/hsuyelin/iptv-web).
 
 <strong>Want to get started?</strong><br/>
-Follow the deployment guide in <a href="https://github.com/hsuyelin/iptv-vod#readme">iptv-vod</a>, or <a href="#running-the-relay">run it from source</a>.<br/>
+Run it with Docker or the binary as described in <a href="https://github.com/hsuyelin/iptv-vod#readme">iptv-vod</a>.<br/>
 
 <strong>Something not working right?</strong><br/>
 Open an <a href="https://github.com/hsuyelin/iptv-rs/issues">Issue</a> on GitHub.<br/>
-
-<strong>Want to contribute?</strong><br/>
-Read <a href="#development">Development</a>, then open a pull request. Commits follow <a href="https://www.conventionalcommits.org">Conventional Commits</a>.<br/>
 
 <strong>Questions or ideas?</strong><br/>
 Join the community on <a href="http://t.me/iptvorganization">Telegram</a>.<br/>
 
 ---
 
-## Relay Endpoints
+## Endpoints
 
 | Route | Purpose |
 |---|---|
@@ -50,36 +45,16 @@ Join the community on <a href="http://t.me/iptvorganization">Telegram</a>.<br/>
 | `GET /channels` | Channel list as JSON |
 | `GET /health` | Relay state and counters |
 
-## Development
+## Options
 
-### Prerequisites
-
-- Rust 1.96 or newer
-- [just](https://github.com/casey/just) and [cargo-deny](https://github.com/EmbarkStudios/cargo-deny)
-
-### Cloning the Repository
-
-```bash
-git clone https://github.com/hsuyelin/iptv-rs.git
-cd iptv-rs
-```
-
-### Running the Relay
-
-```bash
-cargo run --release -p iptv-server -- \
-  --channels /path/to/channels.yaml \
-  --assets-dir ./assets
-```
-
-Add `--help` to list every option. Use `-v` or `-vv` for debug and trace logs, or set `RUST_LOG`. Set `IPTV_ADMIN_KEY` to choose the administrator key; otherwise one is generated and printed at start.
-
-### Verifying Changes
-
-```bash
-just all      # fmt, clippy, test, doc, deps, names, cargo-deny
-just bench    # criterion benchmarks
-```
+| Flag | Environment | Default | Meaning |
+|---|---|---|---|
+| `--host`, `--port` | | `127.0.0.1`, `8787` | Listen address |
+| `--channels` | | `/app/channels.yaml` | Channel list, reloaded on change |
+| `--assets-dir` | `IPTV_ASSETS_DIR` | `./assets` | WASM assets, SHA-256 verified at start |
+| `--web-dir` | `IPTV_WEB_DIR` | off | Serve a built console from this directory |
+| `-v`, `-vv` | `RUST_LOG` | `info` | Log detail |
+| | `IPTV_ADMIN_KEY` | generated | Administrator key |
 
 ## Acknowledgements
 
