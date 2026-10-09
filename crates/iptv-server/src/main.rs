@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use iptv_server::{
     logging, probe, router, system_clock, AdminGate, AdminKey, AppState, ChannelStore,
+    Compat, FfmpegTranscoder, Settings,
 };
 use iptv_upstream::{
     CmgCipherFactory, FlowOptions, LiveClient, MediaPipeline, PipelineConfig,
@@ -32,6 +33,16 @@ struct Args {
     /// Serve a built web console from this directory (disabled when unset).
     #[arg(long, env = "IPTV_WEB_DIR")]
     web_dir: Option<PathBuf>,
+    /// An ffmpeg program with libx264. When set, `?profile=compat` serves a lighter stream
+    /// (720p Main profile, no B-frames, a keyframe at least every 2 s) for old devices.
+    #[arg(long, env = "IPTV_COMPAT_FFMPEG")]
+    compat_ffmpeg: Option<PathBuf>,
+    /// Tallest picture of the compatibility stream, in pixels.
+    #[arg(long, env = "IPTV_COMPAT_HEIGHT", default_value_t = 720)]
+    compat_height: u32,
+    /// Video bit rate of the compatibility stream, in kilobits per second.
+    #[arg(long, env = "IPTV_COMPAT_KBPS", default_value_t = 2500)]
+    compat_kbps: u32,
     /// Ask the relay on `--port` for `/health` and exit 0 when it answers 200 (Docker health checks).
     #[arg(long)]
     healthcheck: bool,
@@ -39,6 +50,9 @@ struct Args {
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 }
+
+/// Re-encoded segments kept for players that ask for the same one again.
+const COMPAT_CACHE_SEGMENTS: usize = 24;
 
 /// Environment variable that holds the administrator key. When it is not set, a random
 /// key is generated for this run and printed once.
@@ -72,6 +86,7 @@ async fn main() -> Result<()> {
         channels = %args.channels.display(),
         assets_dir = %args.assets_dir.display(),
         web_dir = ?args.web_dir,
+        compat = args.compat_ffmpeg.is_some(),
         verbosity = args.verbose,
         pid = std::process::id(),
         "starting iptv-rs"
@@ -103,6 +118,10 @@ async fn main() -> Result<()> {
     let clock = system_clock();
     let admin = Arc::new(AdminGate::with_defaults(key.clone(), Arc::clone(&clock)));
     let state = AppState::new(channels, pipeline, admin, clock);
+    let state = match &args.compat_ffmpeg {
+        Some(program) => state.with_compat(compat(program, &args).await?),
+        None => state,
+    };
     let app = router(state, args.web_dir.as_deref());
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
@@ -132,6 +151,34 @@ async fn main() -> Result<()> {
     .await?;
     info!("iptv-rs stopped");
     Ok(())
+}
+
+/// Prepares the compatibility rendition, failing at start if the encoder cannot be used.
+async fn compat(program: &std::path::Path, args: &Args) -> Result<Arc<Compat>> {
+    let settings = Settings {
+        height: args.compat_height,
+        video_kbps: args.compat_kbps,
+        ..Settings::default()
+    };
+    let transcoder = FfmpegTranscoder::new(program.to_path_buf(), settings);
+    transcoder.check().await.with_context(|| {
+        format!("--compat-ffmpeg {} cannot be used", program.display())
+    })?;
+    // Each encode may use two threads, so keep the number running at once well under the cores.
+    let cores = std::thread::available_parallelism().map_or(2, usize::from);
+    let parallel = (cores / 2).clamp(1, 4);
+    info!(
+        ffmpeg = %program.display(),
+        height = args.compat_height,
+        kbps = args.compat_kbps,
+        parallel,
+        "the compatibility stream is on (?profile=compat)"
+    );
+    Ok(Arc::new(Compat::new(
+        Arc::new(transcoder),
+        parallel,
+        COMPAT_CACHE_SEGMENTS,
+    )))
 }
 
 async fn shutdown_signal() {

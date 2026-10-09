@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true }
+bytes = { workspace = true }
 clap = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
@@ -35,7 +36,6 @@ iptv-upstream = { workspace = true }
 iptv-wasm = { workspace = true }
 
 [dev-dependencies]
-bytes = { workspace = true }
 criterion = { workspace = true }
 tempfile = { workspace = true }
 tower = { workspace = true }

@@ -26,6 +26,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     admin::{client_ip, AdminGate, Verdict},
+    compat::{Compat, CompatError, CompatFailure},
     config::{ChannelStore, StoreStatus},
     notice::{NoticeCache, NoticeCacheItem},
     prefix::{abs_url, append_recursive_prefix},
@@ -73,6 +74,7 @@ pub struct AppState {
     stats: Arc<Stats>,
     notices: Arc<NoticeCache>,
     admin: Arc<AdminGate>,
+    compat: Option<Arc<Compat>>,
     clock: Clock,
 }
 
@@ -90,8 +92,16 @@ impl AppState {
             channels,
             pipeline,
             admin,
+            compat: None,
             clock,
         }
+    }
+
+    /// Offers the compatibility rendition (`?profile=compat`) through `compat`.
+    #[must_use]
+    pub fn with_compat(mut self, compat: Arc<Compat>) -> Self {
+        self.compat = Some(compat);
+        self
     }
 
     fn now_ms(&self) -> u128 {
@@ -295,6 +305,8 @@ struct Health {
     notice: NoticeHealth,
     api_flow: FlowSnapshot,
     routes: [&'static str; 5],
+    /// True when `?profile=compat` serves the lighter rendition.
+    compat: bool,
 }
 
 #[derive(Serialize)]
@@ -336,6 +348,7 @@ async fn health(State(state): State<AppState>) -> Response {
         },
         api_flow,
         routes: ROUTES,
+        compat: state.compat.is_some(),
     })
     .into_response()
 }
@@ -409,13 +422,16 @@ async fn live_playlist(
         return notice_redirect();
     }
     debug!(channel = %channel.ch, livepid = %channel.livepid, "building the channel playlist");
+    // Without a configured encoder the request is simply served the normal stream.
+    let compat = state.compat.is_some() && asks_for_compat(&uri);
+    let profile = if compat { "?profile=compat" } else { "" };
     let rendered = state
         .pipeline
         .local_playlist(channel, |segment| {
             let url = abs_url(
                 &headers,
                 &uri,
-                &format!("/segment/{}/{}.ts", channel.ch, segment.id),
+                &format!("/segment/{}/{}.ts{profile}", channel.ch, segment.id),
             );
             append_recursive_prefix(&uri, &url)
         })
@@ -435,6 +451,7 @@ async fn live_playlist(
 
 async fn segment(
     State(state): State<AppState>,
+    uri: Uri,
     UrlPath((ch, file)): UrlPath<(String, String)>,
 ) -> Response {
     let Some(id) = strip_suffix(&file, ".ts") else {
@@ -446,7 +463,20 @@ async fn segment(
         warn!(ch, id, "segment requested for an unknown channel");
         return notice_redirect();
     };
-    match state.pipeline.segment(channel, id).await {
+    let original = || state.pipeline.segment(channel, id);
+    let result = match state.compat.as_ref().filter(|_| asks_for_compat(&uri)) {
+        Some(compat) => {
+            compat
+                .segment(&channel.ch, id, original)
+                .await
+                .map_err(|failure| match failure {
+                    CompatFailure::Original(error) => SegmentFailure::Upstream(error),
+                    CompatFailure::Transcode(error) => SegmentFailure::Compat(error),
+                })
+        }
+        None => original().await.map_err(SegmentFailure::Upstream),
+    };
+    match result {
         Ok(body) => {
             debug!(channel = %channel.ch, id, bytes = body.len(), "segment streamed");
             state.stats.segment_streamed();
@@ -459,7 +489,7 @@ async fn segment(
             );
             response
         }
-        Err(UpstreamError::Overloaded(busy)) => {
+        Err(SegmentFailure::Upstream(UpstreamError::Overloaded(busy))) => {
             warn!(channel = %busy, id, "channel queue is full; asking the player to retry");
             state.stats.segment_rejected();
             let mut response = json_status(
@@ -480,6 +510,26 @@ async fn segment(
             )
         }
     }
+}
+
+/// Why a segment could not be served.
+#[derive(Debug, thiserror::Error)]
+enum SegmentFailure {
+    #[error(transparent)]
+    Upstream(UpstreamError),
+    #[error("compatibility encode failed: {0}")]
+    Compat(CompatError),
+}
+
+/// The query value that asks for the compatibility rendition.
+const COMPAT_PROFILE: &str = "compat";
+
+/// True when the request asks for `?profile=compat`.
+fn asks_for_compat(uri: &Uri) -> bool {
+    uri.query().is_some_and(|query| {
+        url::form_urlencoded::parse(query.as_bytes())
+            .any(|(key, value)| key == "profile" && value == COMPAT_PROFILE)
+    })
 }
 
 fn strip_suffix<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {

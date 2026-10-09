@@ -48,6 +48,14 @@ fn upstream_playlist(first: i64, count: i64) -> String {
 }
 
 fn app_with(config: PipelineConfig, web_dir: Option<&Path>) -> App {
+    build_app(config, web_dir, None)
+}
+
+fn build_app(
+    config: PipelineConfig,
+    web_dir: Option<&Path>,
+    compat: Option<Arc<Compat>>,
+) -> App {
     let dir = tempfile::tempdir().unwrap();
     let channels_path = dir.path().join("channels.yaml");
     fs::write(&channels_path, CHANNELS).unwrap();
@@ -100,6 +108,10 @@ fn app_with(config: PipelineConfig, web_dir: Option<&Path>) -> App {
         admin,
         Arc::new(move || u128::from(reader.load(Ordering::SeqCst))),
     );
+    let state = match compat {
+        Some(compat) => state.with_compat(compat),
+        None => state,
+    };
     App {
         router: router(state, web_dir),
         transport,
@@ -676,4 +688,180 @@ async fn logs_describe_requests_but_never_show_the_key_or_a_guess() {
     assert!(log.contains("crates/iptv-server/src/app.rs:"), "{log}");
     assert!(log.contains("status=200"), "{log}");
     assert!(log.contains("status=403"), "{log}");
+}
+
+// ---- The compatibility rendition (?profile=compat) --------------------------------------
+
+use crate::compat::{BoxFuture, CompatError, Transcoder};
+
+/// Marks what it encodes, counts how often it ran, and can be told to fail once.
+struct Marking {
+    calls: AtomicU64,
+    fail_next: std::sync::atomic::AtomicBool,
+}
+
+impl Marking {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            calls: AtomicU64::new(0),
+            fail_next: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+}
+
+impl Transcoder for Marking {
+    fn transcode(
+        &self,
+        input: bytes::Bytes,
+    ) -> BoxFuture<'_, Result<bytes::Bytes, CompatError>> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_next.swap(false, Ordering::SeqCst) {
+                return Err(CompatError::BadOutput);
+            }
+            Ok(bytes::Bytes::from([b"COMPAT".as_slice(), &input].concat()))
+        })
+    }
+}
+
+fn compat_app(marking: &Arc<Marking>) -> App {
+    let transcoder: Arc<dyn Transcoder> = marking.clone();
+    build_app(
+        PipelineConfig::default(),
+        None,
+        Some(Arc::new(Compat::new(transcoder, 2, 16))),
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_compat_playlist_points_every_segment_at_the_compat_stream() {
+    let app = compat_app(&Marking::new());
+    let plain = get(&app.router, "/live/cctv1.m3u8").await.text();
+    assert!(segment_paths(&plain).iter().all(|path| !path.contains('?')));
+
+    let compat = get(&app.router, "/live/cctv1.m3u8?profile=compat").await;
+    assert_eq!(compat.status, StatusCode::OK);
+    assert_eq!(compat.headers[header::CACHE_CONTROL], "no-store");
+    let paths = segment_paths(&compat.text());
+    assert_eq!(paths.len(), 12);
+    assert!(paths.iter().all(|path| path.starts_with("/segment/cctv1/")
+        && path.ends_with(".ts?profile=compat")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_compat_segment_is_encoded_once_and_served_with_media_headers() {
+    let marking = Marking::new();
+    let app = compat_app(&marking);
+    let playlist = get(&app.router, "/live/cctv1.m3u8?profile=compat")
+        .await
+        .text();
+    let newest = segment_paths(&playlist).pop().unwrap();
+    let original = get(&app.router, newest.trim_end_matches("?profile=compat")).await;
+    assert!(
+        !original.body.starts_with(b"COMPAT"),
+        "the plain URL stays the plain stream"
+    );
+
+    let first = get(&app.router, &newest).await;
+    assert_eq!(first.status, StatusCode::OK);
+    assert!(first.body.starts_with(b"COMPAT"));
+    assert_eq!(first.headers[header::CONTENT_TYPE], "video/mp2t");
+    assert_eq!(first.headers[header::CACHE_CONTROL], "public, max-age=300");
+    let again = get(&app.router, &newest).await;
+    assert_eq!(again.body, first.body);
+    assert_eq!(
+        marking.calls.load(Ordering::SeqCst),
+        1,
+        "the second request came from the cache"
+    );
+
+    let health = get(&app.router, "/health").await.json();
+    assert_eq!(health["stats"]["segment_streamed"], 3);
+    assert_eq!(health["stats"]["segment_errors"], 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_encode_is_a_bad_gateway_and_the_next_try_works() {
+    let marking = Marking::new();
+    marking.fail_next.store(true, Ordering::SeqCst);
+    let app = compat_app(&marking);
+    let playlist = get(&app.router, "/live/cctv1.m3u8?profile=compat")
+        .await
+        .text();
+    let newest = segment_paths(&playlist).pop().unwrap();
+
+    let failed = get(&app.router, &newest).await;
+    assert_eq!(failed.status, StatusCode::BAD_GATEWAY);
+    assert_eq!(failed.json()["ok"], false);
+    assert!(failed.json()["error"]
+        .as_str()
+        .unwrap()
+        .contains("compatibility"));
+    let retry = get(&app.router, &newest).await;
+    assert_eq!(retry.status, StatusCode::OK);
+    assert!(retry.body.starts_with(b"COMPAT"));
+    let health = get(&app.router, "/health").await.json();
+    assert_eq!(health["stats"]["segment_errors"], 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn without_an_encoder_the_profile_is_ignored_and_the_plain_stream_is_served() {
+    let app = app();
+    let playlist = get(&app.router, "/live/cctv1.m3u8?profile=compat")
+        .await
+        .text();
+    let paths = segment_paths(&playlist);
+    assert!(paths.iter().all(|path| !path.contains('?')), "{paths:?}");
+    let newest = paths.last().unwrap();
+    let reply = get(&app.router, &format!("{newest}?profile=compat")).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.body.len() % 188, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_the_compat_profile_changes_anything() {
+    let marking = Marking::new();
+    let app = compat_app(&marking);
+    for query in [
+        "profile=other",
+        "profile=",
+        "profile=COMPAT",
+        "compat=1",
+        "x=profile%3Dcompat",
+    ] {
+        let playlist = get(&app.router, &format!("/live/cctv1.m3u8?{query}"))
+            .await
+            .text();
+        assert!(
+            segment_paths(&playlist)
+                .iter()
+                .all(|path| !path.contains('?')),
+            "{query}"
+        );
+    }
+    assert_eq!(marking.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_prefix_and_the_profile_can_travel_together() {
+    let app = compat_app(&Marking::new());
+    let playlist = get(
+        &app.router,
+        "/live/cctv1.m3u8?profile=compat&prefix=https%3A%2F%2Fedge.example",
+    )
+    .await
+    .text();
+    let line = playlist
+        .lines()
+        .find(|line| line.starts_with("http"))
+        .unwrap();
+    assert!(line.contains("profile=compat"), "{line}");
+    assert!(line.contains("prefix="), "{line}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn health_says_whether_the_compat_stream_is_on() {
+    assert_eq!(get(&app().router, "/health").await.json()["compat"], false);
+    let on = compat_app(&Marking::new());
+    assert_eq!(get(&on.router, "/health").await.json()["compat"], true);
 }

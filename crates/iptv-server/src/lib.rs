@@ -6,6 +6,7 @@
 
 pub mod admin;
 mod app;
+pub mod compat;
 pub mod config;
 pub mod logging;
 pub mod notice;
@@ -17,5 +18,8 @@ pub use admin::{AdminGate, AdminKey, KeyError, Limits, Verdict};
 pub use app::{
     router, system_clock, AppState, Clock, EPG_URL, NOTICE_CACHE_TTL_MS, NOTICE_LOGO_URL,
     NOTICE_NAME, NOTICE_URL,
+};
+pub use compat::{
+    Compat, CompatError, CompatFailure, FfmpegTranscoder, Settings, Transcoder,
 };
 pub use config::{ChannelIndex, ChannelStore, ConfigError, StoreStatus};

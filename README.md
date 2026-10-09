@@ -22,7 +22,7 @@ iptv-rs is a small, fast IPTV relay written in Rust. It signs upstream requests,
 | Route | Purpose |
 |---|---|
 | `GET /list.m3u` | Playlist for players |
-| `GET /live/{ch}.m3u8` | Live HLS playlist |
+| `GET /live/{ch}.m3u8` | Live HLS playlist; add `?profile=compat` for the lighter stream (see below) |
 | `GET /segment/{ch}/{id}.ts` | Remuxed MPEG-TS segment |
 | `GET /channels` | Channel list as JSON |
 | `GET /health` | Relay state and counters |
@@ -37,6 +37,15 @@ iptv-rs is a small, fast IPTV relay written in Rust. It signs upstream requests,
 | `--web-dir` | `IPTV_WEB_DIR` | off | Serve a built console from this directory |
 | `-v`, `-vv` | `RUST_LOG` | `info` | Log detail |
 | | `IPTV_ADMIN_KEY` | generated | Administrator key |
+| `--compat-ffmpeg` | `IPTV_COMPAT_FFMPEG` | off | An ffmpeg with libx264; turns on `?profile=compat` |
+| `--compat-height` | `IPTV_COMPAT_HEIGHT` | `720` | Tallest picture of the lighter stream |
+| `--compat-kbps` | `IPTV_COMPAT_KBPS` | `2500` | Its video bit rate |
+
+## Lighter stream for old devices
+
+The normal stream is 1080p High profile with B-frames. Some older iPhones and iPads play it as a slideshow with sound, or not at all. With `--compat-ffmpeg` set, `GET /live/{ch}.m3u8?profile=compat` serves each segment re-encoded to 720p Main profile without B-frames and with a keyframe at least every 2 seconds. The audio is copied untouched and every timestamp is kept, so segments still join exactly. Each segment is encoded once, however many players ask, and costs about 15% of one CPU core per channel being watched.
+
+Without `--compat-ffmpeg` the parameter is ignored and the normal stream is served.
 
 ## Acknowledgements
 

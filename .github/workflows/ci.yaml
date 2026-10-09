@@ -62,6 +62,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      # The compatibility-stream tests encode and inspect real video; without these they skip.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.arch }}
