@@ -1,0 +1,101 @@
+name: CI
+
+# Runs the checks of the justfile whenever a push or pull request touches Rust code,
+# the Cargo manifests, the toolchain and lint settings, or the WASM assets.
+on:
+  push:
+    branches: [main]
+    paths: &paths
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - Cargo.lock
+      - rust-toolchain.toml
+      - rustfmt.toml
+      - clippy.toml
+      - deny.toml
+      - assets/**
+      - .github/workflows/ci.yaml
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # Use the installed toolchain instead of the `stable` channel in rust-toolchain.toml.
+  RUSTUP_TOOLCHAIN: 1.96.0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  test:
+    name: Test ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
+      - run: cargo test --workspace --all-features --locked
+
+  doc:
+    name: Docs
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --all-features --no-deps --locked
+
+  rules:
+    name: Project rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      # The media crate must stay free of network, async and WASM dependencies.
+      - name: Media crate dependencies
+        run: "! cargo tree -p iptv-media -e normal --prefix none --locked | grep -E '^(axum|reqwest|wasmtime|tokio|hyper) '"
+      # No Service Locator vocabulary in Rust sources.
+      - name: Naming
+        run: "! grep -RniE --include='*.rs' -e 'resolv[a-z_]*|provider|locator|registry|container' crates"
+
+  deny:
+    name: Advisories and licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
