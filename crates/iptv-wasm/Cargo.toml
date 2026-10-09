@@ -1,0 +1,30 @@
+[package]
+name = "iptv-wasm"
+description = "WASM hosts (CMG decryptor, ticket and keygen signers) for the IPTV relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+wasmtime = { workspace = true }
+iptv-media = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "wasm"
+harness = false
+
+[lints]
+workspace = true

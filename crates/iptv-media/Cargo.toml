@@ -1,0 +1,32 @@
+[package]
+name = "iptv-media"
+description = "Pure MPEG-TS demux, remux and HLS playlist logic for the IPTV relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Synthetic stream generator and pass-through cipher for tests and benchmarks.
+testkit = []
+
+[dependencies]
+hex = { workspace = true }
+serde = { workspace = true }
+sha1 = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+rand = { workspace = true }
+
+[[bench]]
+name = "media"
+harness = false
+required-features = ["testkit"]
+
+[lints]
+workspace = true

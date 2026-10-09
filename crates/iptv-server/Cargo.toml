@@ -1,0 +1,48 @@
+[package]
+name = "iptv-server"
+description = "HTTP server for the IPTV relay: playlists, segments, channel listing and health"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "iptv_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "iptv-rs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+url = { workspace = true }
+iptv-media = { workspace = true }
+iptv-upstream = { workspace = true }
+iptv-wasm = { workspace = true }
+
+[dev-dependencies]
+bytes = { workspace = true }
+criterion = { workspace = true }
+tempfile = { workspace = true }
+tower = { workspace = true }
+iptv-media = { workspace = true, features = ["testkit"] }
+iptv-upstream = { workspace = true, features = ["testkit"] }
+
+[[bench]]
+name = "server"
+harness = false
+
+[lints]
+workspace = true
