@@ -2,6 +2,7 @@
 <img alt="iptv-rs" src="branding/banner.svg" width="560"/>
 <br/>
 <br/>
+<a href="https://github.com/hsuyelin/iptv-rs/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/hsuyelin/iptv-rs/actions/workflows/ci.yaml/badge.svg"/></a>
 <a href="https://github.com/hsuyelin/iptv-rs"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue.svg"/></a>
 <a href="https://github.com/hsuyelin/iptv-rs/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/hsuyelin/iptv-rs.svg"/></a>
 <a href="https://github.com/hsuyelin/iptv-rs/commits/main"><img alt="Last Commit" src="https://img.shields.io/github/last-commit/hsuyelin/iptv-rs.svg"/></a>
