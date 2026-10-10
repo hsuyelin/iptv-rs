@@ -55,6 +55,14 @@ struct Args {
     /// Video bit rate of the compatibility stream, in kilobits per second.
     #[arg(long, env = "IPTV_COMPAT_KBPS", default_value_t = 2500)]
     compat_kbps: u32,
+    /// x264 speed preset of the compatibility stream; faster uses less CPU (try `superfast`).
+    #[arg(
+        long,
+        env = "IPTV_COMPAT_PRESET",
+        default_value = "veryfast",
+        value_parser = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium"],
+    )]
+    compat_preset: String,
     /// Ask the relay on `--port` for `/health` and exit 0 when it answers 200 (Docker health checks).
     #[arg(long)]
     healthcheck: bool,
@@ -185,19 +193,21 @@ async fn compat(program: &std::path::Path, args: &Args) -> Result<Arc<Compat>> {
     let settings = Settings {
         height: args.compat_height,
         video_kbps: args.compat_kbps,
+        preset: args.compat_preset.clone(),
         ..Settings::default()
     };
     let transcoder = FfmpegTranscoder::new(program.to_path_buf(), settings);
     transcoder.check().await.with_context(|| {
         format!("--compat-ffmpeg {} cannot be used", program.display())
     })?;
-    // Each encode may use two threads, so keep the number running at once well under the cores.
+    // Keep the encodes running at once well under the cores, so the relay itself keeps up.
     let cores = std::thread::available_parallelism().map_or(2, usize::from);
     let parallel = (cores / 2).clamp(1, 4);
     info!(
         ffmpeg = %program.display(),
         height = args.compat_height,
         kbps = args.compat_kbps,
+        preset = %args.compat_preset,
         parallel,
         "the compatibility stream is on (?profile=compat)"
     );

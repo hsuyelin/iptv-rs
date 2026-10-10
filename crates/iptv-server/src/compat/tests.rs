@@ -71,10 +71,24 @@ fn the_command_line_asks_for_what_old_devices_can_play() {
         "no keyframes at scene cuts"
     );
     assert_eq!(after(&args, "-pix_fmt"), Some("yuv420p"));
-    assert_eq!(after(&args, "-vf"), Some("scale=-2:'min(720,ih)'"));
+    assert_eq!(after(&args, "-vf"), Some("scale=-2:'min(720,ih)':flags=bilinear"));
     assert_eq!(after(&args, "-b:v"), Some("2500k"));
     assert_eq!(after(&args, "-maxrate"), Some("3000k"));
     assert_eq!(after(&args, "-bufsize"), Some("5000k"));
+    assert_eq!(after(&args, "-threads"), Some("1"));
+    assert_eq!(
+        after(&args, "-x264-params"),
+        Some("rc-lookahead=5:me=dia:subme=1")
+    );
+}
+
+#[test]
+fn the_preset_is_configurable() {
+    let args = ffmpeg_args(&Settings {
+        preset: "superfast".to_string(),
+        ..Settings::default()
+    });
+    assert_eq!(after(&args, "-preset"), Some("superfast"));
 }
 
 #[test]

@@ -41,6 +41,7 @@ iptv-rs is a small, fast IPTV relay written in Rust. It signs upstream requests,
 | `--compat` | `IPTV_COMPAT` | `on` | `off` (or `0`, `false`, `no`) switches the lighter stream off even when an ffmpeg is set; empty counts as `on` |
 | `--compat-height` | `IPTV_COMPAT_HEIGHT` | `720` | Tallest picture of the lighter stream |
 | `--compat-kbps` | `IPTV_COMPAT_KBPS` | `2500` | Its video bit rate |
+| `--compat-preset` | `IPTV_COMPAT_PRESET` | `veryfast` | x264 speed preset (`ultrafast`…`medium`); faster uses less CPU. On a 2-core machine try `superfast` with `IPTV_COMPAT_HEIGHT=576` |
 
 ## Lighter stream for old devices
 
