@@ -163,7 +163,10 @@ pub fn ffmpeg_args(settings: &Settings) -> Vec<String> {
         "0:a:0",
     ]);
     args.push("-vf".into());
-    args.push(format!("scale=-2:'min({},ih)':flags=bilinear", settings.height));
+    args.push(format!(
+        "scale=-2:'min({},ih)':flags=bilinear",
+        settings.height
+    ));
     args.extend(strings(&["-c:v", "libx264", "-preset"]));
     args.push(settings.preset.clone());
     args.extend(strings(&[

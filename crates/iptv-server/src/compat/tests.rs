@@ -71,7 +71,10 @@ fn the_command_line_asks_for_what_old_devices_can_play() {
         "no keyframes at scene cuts"
     );
     assert_eq!(after(&args, "-pix_fmt"), Some("yuv420p"));
-    assert_eq!(after(&args, "-vf"), Some("scale=-2:'min(720,ih)':flags=bilinear"));
+    assert_eq!(
+        after(&args, "-vf"),
+        Some("scale=-2:'min(720,ih)':flags=bilinear")
+    );
     assert_eq!(after(&args, "-b:v"), Some("2500k"));
     assert_eq!(after(&args, "-maxrate"), Some("3000k"));
     assert_eq!(after(&args, "-bufsize"), Some("5000k"));
